@@ -4,6 +4,9 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const authRoutes = require('./routes/authRoutes');
 const shopRoutes = require('./routes/shopRoutes');
+const productRoutes = require('./routes/productRoutes');
+const categoryRoutes = require('./routes/categoryRoutes');
+const reviewRoutes = require('./routes/reviewRoutes');
 
 const app = express();
 
@@ -46,11 +49,12 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Auth routes
+// API Routes
 app.use('/api/auth', authRoutes);
-
-// Shop routes
 app.use('/api/shops', shopRoutes);
+app.use('/api/products', productRoutes);
+app.use('/api/categories', categoryRoutes);
+app.use('/api/reviews', reviewRoutes);
 
 // 404 handler
 app.use((req, res) => {

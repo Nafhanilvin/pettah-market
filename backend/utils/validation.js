@@ -64,7 +64,130 @@ const loginValidation = (data) => {
   return schema.validate(data);
 };
 
+// Create shop validation
+const createShopValidation = (data) => {
+  const schema = Joi.object({
+    name: Joi.string()
+      .required()
+      .max(100)
+      .messages({
+        'any.required': 'Shop name is required',
+        'string.max': 'Shop name cannot exceed 100 characters'
+      }),
+    description: Joi.string()
+      .max(1000)
+      .optional(),
+    category: Joi.string()
+      .required()
+      .valid(
+        'Electronics',
+        'Clothing',
+        'Food & Beverages',
+        'Home & Garden',
+        'Health & Beauty',
+        'Books & Media',
+        'Sports & Outdoors',
+        'Toys & Games',
+        'Automotive',
+        'Services',
+        'Other'
+      )
+      .messages({
+        'any.required': 'Category is required'
+      }),
+    phone: Joi.string()
+      .required()
+      .messages({
+        'any.required': 'Phone number is required'
+      }),
+    email: Joi.string()
+      .email()
+      .required()
+      .messages({
+        'any.required': 'Email is required',
+        'string.email': 'Email must be valid'
+      }),
+    website: Joi.string()
+      .uri()
+      .optional(),
+    street: Joi.string()
+      .required()
+      .messages({
+        'any.required': 'Street address is required'
+      }),
+    city: Joi.string()
+      .required()
+      .messages({
+        'any.required': 'City is required'
+      }),
+    district: Joi.string()
+      .required()
+      .messages({
+        'any.required': 'District is required'
+      }),
+    postalCode: Joi.string()
+      .optional(),
+    about: Joi.string()
+      .max(2000)
+      .optional()
+  });
+
+  return schema.validate(data, { abortEarly: false });
+};
+
+// Update shop validation
+const updateShopValidation = (data) => {
+  const schema = Joi.object({
+    name: Joi.string()
+      .max(100)
+      .optional(),
+    description: Joi.string()
+      .max(1000)
+      .optional(),
+    category: Joi.string()
+      .optional()
+      .valid(
+        'Electronics',
+        'Clothing',
+        'Food & Beverages',
+        'Home & Garden',
+        'Health & Beauty',
+        'Books & Media',
+        'Sports & Outdoors',
+        'Toys & Games',
+        'Automotive',
+        'Services',
+        'Other'
+      ),
+    phone: Joi.string()
+      .optional(),
+    email: Joi.string()
+      .email()
+      .optional(),
+    website: Joi.string()
+      .uri()
+      .optional(),
+    street: Joi.string()
+      .optional(),
+    city: Joi.string()
+      .optional(),
+    district: Joi.string()
+      .optional(),
+    postalCode: Joi.string()
+      .optional(),
+    about: Joi.string()
+      .max(2000)
+      .optional(),
+    openingHours: Joi.object()
+      .optional()
+  });
+
+  return schema.validate(data, { abortEarly: false });
+};
+
 module.exports = {
   registerValidation,
-  loginValidation
+  loginValidation,
+  createShopValidation,
+  updateShopValidation
 };

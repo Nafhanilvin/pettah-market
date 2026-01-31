@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
 const authRoutes = require('./routes/authRoutes');
+const shopRoutes = require('./routes/shopRoutes');
 
 const app = express();
 
@@ -47,6 +48,9 @@ app.get('/api/health', (req, res) => {
 
 // Auth routes
 app.use('/api/auth', authRoutes);
+
+// Shop routes
+app.use('/api/shops', shopRoutes);
 
 // 404 handler
 app.use((req, res) => {

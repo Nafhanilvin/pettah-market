@@ -1,4 +1,12 @@
-const Category = require('../models/Category');
+const prisma = require('../config/prisma');
+const { withMongoId } = require('../utils/normalizers');
+
+const slugify = (name) =>
+  String(name)
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^\w-]/g, '');
 
 /**
  * Get all categories
@@ -7,30 +15,34 @@ exports.getAllCategories = async (req, res) => {
   try {
     const { parentOnly, page = 1, limit = 20 } = req.query;
 
-    const filter = { isActive: true };
-    if (parentOnly === 'true') {
-      filter.parentCategoryId = null;
-    }
+    const pageNumber = Number.parseInt(page, 10) || 1;
+    const pageLimit = Number.parseInt(limit, 10) || 20;
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const where = {
+      isActive: true,
+      ...(parentOnly === 'true' ? { parentCategoryId: null } : {})
+    };
 
-    const categories = await Category.find(filter)
-      .skip(skip)
-      .limit(parseInt(limit))
-      .sort('name');
-
-    const total = await Category.countDocuments(filter);
+    const [categories, total] = await Promise.all([
+      prisma.category.findMany({
+        where,
+        skip: (pageNumber - 1) * pageLimit,
+        take: pageLimit,
+        orderBy: { name: 'asc' }
+      }),
+      prisma.category.count({ where })
+    ]);
 
     res.json({
       success: true,
       message: 'Categories retrieved',
       data: {
-        categories,
+        categories: withMongoId(categories),
         pagination: {
           total,
-          page: parseInt(page),
-          limit: parseInt(limit),
-          pages: Math.ceil(total / parseInt(limit))
+          page: pageNumber,
+          limit: pageLimit,
+          pages: Math.ceil(total / pageLimit)
         }
       }
     });
@@ -49,7 +61,9 @@ exports.getAllCategories = async (req, res) => {
  */
 exports.getCategoryById = async (req, res) => {
   try {
-    const category = await Category.findById(req.params.categoryId);
+    const category = await prisma.category.findUnique({
+      where: { id: req.params.categoryId }
+    });
 
     if (!category) {
       return res.status(404).json({
@@ -61,7 +75,7 @@ exports.getCategoryById = async (req, res) => {
     res.json({
       success: true,
       message: 'Category retrieved',
-      data: category
+      data: withMongoId(category)
     });
   } catch (err) {
     console.error('Get category error:', err);
@@ -78,7 +92,9 @@ exports.getCategoryById = async (req, res) => {
  */
 exports.getCategoryBySlug = async (req, res) => {
   try {
-    const category = await Category.findOne({ slug: req.params.slug });
+    const category = await prisma.category.findUnique({
+      where: { slug: req.params.slug }
+    });
 
     if (!category) {
       return res.status(404).json({
@@ -90,7 +106,7 @@ exports.getCategoryBySlug = async (req, res) => {
     res.json({
       success: true,
       message: 'Category retrieved',
-      data: category
+      data: withMongoId(category)
     });
   } catch (err) {
     console.error('Get category by slug error:', err);
@@ -103,7 +119,7 @@ exports.getCategoryBySlug = async (req, res) => {
 };
 
 /**
- * Create category (admin only)
+ * Create category (shop owner/admin)
  */
 exports.createCategory = async (req, res) => {
   try {
@@ -116,8 +132,12 @@ exports.createCategory = async (req, res) => {
       });
     }
 
-    // Check if category already exists
-    const existingCategory = await Category.findOne({ name: name.toLowerCase() });
+    const normalizedName = String(name).trim();
+
+    const existingCategory = await prisma.category.findFirst({
+      where: { name: normalizedName }
+    });
+
     if (existingCategory) {
       return res.status(409).json({
         success: false,
@@ -125,22 +145,29 @@ exports.createCategory = async (req, res) => {
       });
     }
 
-    const category = new Category({
-      name,
-      description,
-      icon,
-      parentCategoryId: parentCategoryId || null
+    const category = await prisma.category.create({
+      data: {
+        name: normalizedName,
+        slug: slugify(normalizedName),
+        description: description || null,
+        icon: icon || null,
+        parentCategoryId: parentCategoryId || null
+      }
     });
-
-    await category.save();
 
     res.status(201).json({
       success: true,
       message: 'Category created successfully',
-      data: category
+      data: withMongoId(category)
     });
   } catch (err) {
     console.error('Create category error:', err);
+    if (err.code === 'P2002') {
+      return res.status(409).json({
+        success: false,
+        message: 'Category already exists'
+      });
+    }
     res.status(500).json({
       success: false,
       message: 'Failed to create category',
@@ -150,38 +177,45 @@ exports.createCategory = async (req, res) => {
 };
 
 /**
- * Update category (admin only)
+ * Update category (shop owner/admin)
  */
 exports.updateCategory = async (req, res) => {
   try {
     const { name, description, icon, parentCategoryId } = req.body;
 
     const updateData = {};
-    if (name) updateData.name = name;
-    if (description) updateData.description = description;
-    if (icon) updateData.icon = icon;
+    if (name) {
+      updateData.name = String(name).trim();
+      updateData.slug = slugify(name);
+    }
+    if (description !== undefined) updateData.description = description || null;
+    if (icon !== undefined) updateData.icon = icon || null;
     if (parentCategoryId !== undefined) updateData.parentCategoryId = parentCategoryId || null;
 
-    const category = await Category.findByIdAndUpdate(
-      req.params.categoryId,
-      updateData,
-      { new: true, runValidators: true }
-    );
+    const category = await prisma.category.update({
+      where: { id: req.params.categoryId },
+      data: updateData
+    });
 
-    if (!category) {
+    res.json({
+      success: true,
+      message: 'Category updated successfully',
+      data: withMongoId(category)
+    });
+  } catch (err) {
+    console.error('Update category error:', err);
+    if (err.code === 'P2025') {
       return res.status(404).json({
         success: false,
         message: 'Category not found'
       });
     }
-
-    res.json({
-      success: true,
-      message: 'Category updated successfully',
-      data: category
-    });
-  } catch (err) {
-    console.error('Update category error:', err);
+    if (err.code === 'P2002') {
+      return res.status(409).json({
+        success: false,
+        message: 'Category already exists'
+      });
+    }
     res.status(500).json({
       success: false,
       message: 'Failed to update category',
@@ -191,18 +225,13 @@ exports.updateCategory = async (req, res) => {
 };
 
 /**
- * Delete category (admin only)
+ * Delete category (shop owner/admin)
  */
 exports.deleteCategory = async (req, res) => {
   try {
-    const category = await Category.findByIdAndDelete(req.params.categoryId);
-
-    if (!category) {
-      return res.status(404).json({
-        success: false,
-        message: 'Category not found'
-      });
-    }
+    await prisma.category.delete({
+      where: { id: req.params.categoryId }
+    });
 
     res.json({
       success: true,
@@ -210,6 +239,12 @@ exports.deleteCategory = async (req, res) => {
     });
   } catch (err) {
     console.error('Delete category error:', err);
+    if (err.code === 'P2025') {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
     res.status(500).json({
       success: false,
       message: 'Failed to delete category',

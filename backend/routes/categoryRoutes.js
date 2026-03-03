@@ -1,5 +1,6 @@
 const express = require('express');
 const categoryController = require('../controllers/categoryController');
+const { protect, shopOwnerOnly } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -8,9 +9,9 @@ router.get('/', categoryController.getAllCategories);
 router.get('/:categoryId', categoryController.getCategoryById);
 router.get('/slug/:slug', categoryController.getCategoryBySlug);
 
-// Admin routes (future: add admin middleware)
-router.post('/', categoryController.createCategory);
-router.put('/:categoryId', categoryController.updateCategory);
-router.delete('/:categoryId', categoryController.deleteCategory);
+// Shop owner/admin routes
+router.post('/', protect, shopOwnerOnly, categoryController.createCategory);
+router.put('/:categoryId', protect, shopOwnerOnly, categoryController.updateCategory);
+router.delete('/:categoryId', protect, shopOwnerOnly, categoryController.deleteCategory);
 
 module.exports = router;

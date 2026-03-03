@@ -6,6 +6,11 @@ const shopSchema = new mongoose.Schema({
     ref: 'User',
     required: [true, 'Owner ID is required']
   },
+  street: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Street',
+    default: null
+  },
   name: {
     type: String,
     required: [true, 'Shop name is required'],

@@ -1,0 +1,153 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  password      String
+  firstName     String
+  lastName      String
+  phone         String?
+  profileImage  String?
+  userType      String   @default("customer")
+  address       Json?
+  isActive      Boolean  @default(true)
+  emailVerified Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  shops   Shop[]
+  reviews Review[] @relation("ReviewerReviews")
+}
+
+model Street {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  location    Json?
+  isActive    Boolean  @default(true)
+  shopCount   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  shops Shop[]
+}
+
+model Shop {
+  id                 String   @id @default(cuid())
+  ownerId            String
+  streetId           String?
+  name               String
+  description        String?
+  category           String
+  logo               String?
+  coverImage         String?
+  contact            Json
+  address            Json
+  openingHours       Json?
+  rating             Float    @default(0)
+  totalReviews       Int      @default(0)
+  totalProducts      Int      @default(0)
+  isVerified         Boolean  @default(false)
+  isActive           Boolean  @default(true)
+  about              String?  @db.Text
+  businessLicense    String?
+  registrationNumber String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  owner    User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  street   Street?  @relation(fields: [streetId], references: [id], onDelete: SetNull)
+  products Product[]
+
+  @@index([ownerId])
+  @@index([streetId])
+  @@index([category])
+  @@index([isActive])
+}
+
+model Category {
+  id               String    @id @default(cuid())
+  name             String    @unique
+  slug             String    @unique
+  description      String?
+  icon             String?
+  image            String?
+  parentCategoryId String?
+  isActive         Boolean   @default(true)
+  totalProducts    Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  parent       Category?  @relation("CategoryHierarchy", fields: [parentCategoryId], references: [id], onDelete: SetNull)
+  subcategories Category[] @relation("CategoryHierarchy")
+  products     Product[]
+
+  @@index([parentCategoryId])
+  @@index([isActive])
+}
+
+model Product {
+  id            String   @id @default(cuid())
+  shopId        String
+  name          String
+  description   String   @db.Text
+  categoryId    String
+  price         Float
+  discountPrice Float?
+  images        Json?
+  inStock       Boolean  @default(true)
+  quantity      Int      @default(0)
+  rating        Float    @default(0)
+  totalReviews  Int      @default(0)
+  sku           String?  @unique
+  weight        Float?
+  dimensions    Json?
+  tags          Json?
+  isActive      Boolean  @default(true)
+  isHighlighted Boolean  @default(false)
+  views         Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  shop     Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@index([shopId])
+  @@index([categoryId])
+  @@index([isActive])
+  @@index([price])
+  @@index([rating])
+}
+
+model Review {
+  id               String   @id @default(cuid())
+  reviewerId       String
+  targetId         String
+  targetType       String
+  rating           Int
+  title            String
+  comment          String   @db.Text
+  images           Json?
+  helpful          Int      @default(0)
+  unhelpful        Int      @default(0)
+  status           String   @default("APPROVED")
+  isVerifiedPurchase Boolean @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  reviewer User @relation("ReviewerReviews", fields: [reviewerId], references: [id], onDelete: Cascade)
+
+  @@index([reviewerId])
+  @@index([targetId])
+  @@index([targetType])
+  @@index([createdAt])
+  @@index([targetId, targetType])
+  @@unique([reviewerId, targetId, targetType])
+}

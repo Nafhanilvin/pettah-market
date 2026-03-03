@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #f9fafb;
+  color: #111827;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Smooth animations */
+@layer components {
+  .btn-primary {
+    @apply bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700;
+    transition: all 300ms ease-in-out;
+  }
+
+  .btn-secondary {
+    @apply border border-gray-300 px-4 py-2 rounded-lg font-semibold hover:bg-gray-50;
+    transition: all 300ms ease-in-out;
+  }
+
+  .card {
+    @apply bg-white border border-gray-200 rounded-lg shadow-sm hover:shadow-md;
+    transition: all 300ms ease-in-out;
+  }
+
+  .badge {
+    @apply inline-block px-3 py-1 rounded-full text-sm font-semibold;
+  }
+
+  .badge-primary {
+    @apply badge bg-blue-100 text-blue-800;
+  }
+
+  .badge-success {
+    @apply badge bg-green-100 text-green-800;
+  }
+
+  .badge-warning {
+    @apply badge bg-yellow-100 text-yellow-800;
+  }
+
+  .badge-error {
+    @apply badge bg-red-100 text-red-800;
+  }
+}

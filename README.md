@@ -53,7 +53,7 @@ pettah-market/
 - Node.js (v18 or higher)
 - npm or yarn
 - Git
-- MongoDB Atlas account (free tier available)
+- MongoDB (local installation for development)
 
 ### Installation
 
@@ -70,6 +70,9 @@ npm install
 cp .env.example .env
 npm run dev
 ```
+
+The default backend `.env.example` is configured for a simple local MongoDB setup.
+When the project is ready to scale, switch `MONGODB_URI` to a managed/cluster database URI.
 
 3. Setup Frontend
 ```bash

@@ -37,8 +37,8 @@ const registerValidation = (data) => {
         'any.required': 'Last name is required'
       }),
     userType: Joi.string()
-      .valid('CUSTOMER', 'SHOP_OWNER')
-      .default('CUSTOMER')
+      .valid('customer', 'shop-owner', 'admin')
+      .default('customer')
   });
 
   return schema.validate(data, { abortEarly: false });
@@ -185,9 +185,37 @@ const updateShopValidation = (data) => {
   return schema.validate(data, { abortEarly: false });
 };
 
+// Admin creates owner + shop validation
+const createOwnerWithShopValidation = (data) => {
+  const schema = Joi.object({
+    owner: Joi.object({
+      firstName: Joi.string().trim().required(),
+      lastName: Joi.string().trim().required(),
+      email: Joi.string().email().required(),
+      password: Joi.string().min(6).required()
+    }).required(),
+    shop: Joi.object({
+      name: Joi.string().trim().max(100).required(),
+      description: Joi.string().allow('', null).max(1000).optional(),
+      category: Joi.string().required(),
+      phone: Joi.string().required(),
+      email: Joi.string().email().required(),
+      website: Joi.string().uri().allow('', null).optional(),
+      street: Joi.string().required(),
+      city: Joi.string().required(),
+      district: Joi.string().required(),
+      postalCode: Joi.string().allow('', null).optional(),
+      about: Joi.string().allow('', null).max(2000).optional()
+    }).required()
+  });
+
+  return schema.validate(data, { abortEarly: false });
+};
+
 module.exports = {
   registerValidation,
   loginValidation,
   createShopValidation,
-  updateShopValidation
+  updateShopValidation,
+  createOwnerWithShopValidation
 };

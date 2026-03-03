@@ -1,13 +1,41 @@
-const Shop = require('../models/Shop');
-const User = require('../models/User');
+const prisma = require('../config/prisma');
 const { createShopValidation, updateShopValidation } = require('../utils/validation');
+const { withMongoId } = require('../utils/normalizers');
+
+const parseSort = (sort) => {
+  if (!sort || typeof sort !== 'string') return { createdAt: 'desc' };
+
+  const direction = sort.startsWith('-') ? 'desc' : 'asc';
+  const key = sort.replace(/^-/, '');
+  const allowed = ['createdAt', 'updatedAt', 'rating', 'name'];
+
+  if (!allowed.includes(key)) {
+    return { createdAt: 'desc' };
+  }
+
+  return { [key]: direction };
+};
+
+const withOwnerAsOwnerId = (shop) => {
+  if (!shop || !shop.owner) return shop;
+
+  const { owner, ...rest } = shop;
+  return {
+    ...rest,
+    ownerId: owner
+  };
+};
+
+const cityOf = (shop) => {
+  if (!shop || !shop.address || typeof shop.address !== 'object') return null;
+  return shop.address.city || null;
+};
 
 /**
  * Create a new shop
  */
 exports.createShop = async (req, res) => {
   try {
-    // Validate input
     const { error, value } = createShopValidation(req.body);
     if (error) {
       return res.status(400).json({
@@ -20,8 +48,10 @@ exports.createShop = async (req, res) => {
       });
     }
 
-    // Check if user already has a shop
-    const existingShop = await Shop.findOne({ ownerId: req.user.userId });
+    const existingShop = await prisma.shop.findFirst({
+      where: { ownerId: req.user.userId }
+    });
+
     if (existingShop) {
       return res.status(409).json({
         success: false,
@@ -29,37 +59,36 @@ exports.createShop = async (req, res) => {
       });
     }
 
-    // Create shop object
-    const shopData = {
-      ownerId: req.user.userId,
-      name: value.name,
-      description: value.description,
-      category: value.category,
-      contact: {
-        phone: value.phone,
-        email: value.email,
-        website: value.website
-      },
-      address: {
-        street: value.street,
-        city: value.city,
-        district: value.district,
-        postalCode: value.postalCode
-      },
-      about: value.about
-    };
+    const shop = await prisma.shop.create({
+      data: {
+        ownerId: req.user.userId,
+        name: value.name,
+        description: value.description || null,
+        category: value.category,
+        contact: {
+          phone: value.phone,
+          email: value.email,
+          website: value.website || null
+        },
+        address: {
+          street: value.street,
+          city: value.city,
+          district: value.district,
+          postalCode: value.postalCode || null
+        },
+        about: value.about || null
+      }
+    });
 
-    // Create shop
-    const shop = new Shop(shopData);
-    await shop.save();
-
-    // Update user type to SHOP_OWNER
-    await User.findByIdAndUpdate(req.user.userId, { userType: 'SHOP_OWNER' });
+    await prisma.user.update({
+      where: { id: req.user.userId },
+      data: { userType: 'shop-owner' }
+    });
 
     res.status(201).json({
       success: true,
       message: 'Shop created successfully',
-      data: shop
+      data: withMongoId(shop)
     });
   } catch (err) {
     console.error('Create shop error:', err);
@@ -78,44 +107,63 @@ exports.getAllShops = async (req, res) => {
   try {
     const { category, city, search, page = 1, limit = 10, sort = '-createdAt' } = req.query;
 
-    // Build filter object
-    const filter = { isActive: true };
+    const pageNumber = Number.parseInt(page, 10) || 1;
+    const pageLimit = Number.parseInt(limit, 10) || 10;
 
-    if (category) {
-      filter.category = category;
-    }
+    const where = {
+      isActive: true,
+      ...(category ? { category } : {}),
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search } },
+              { description: { contains: search } }
+            ]
+          }
+        : {})
+    };
 
-    if (city) {
-      filter['address.city'] = city;
-    }
+    const [fetchedShops, totalBeforeCityFilter] = await Promise.all([
+      prisma.shop.findMany({
+        where,
+        orderBy: parseSort(sort),
+        skip: city ? 0 : (pageNumber - 1) * pageLimit,
+        take: city ? undefined : pageLimit,
+        include: {
+          owner: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              email: true,
+              phone: true
+            }
+          }
+        }
+      }),
+      prisma.shop.count({ where })
+    ]);
 
-    if (search) {
-      filter.$text = { $search: search };
-    }
+    const cityFiltered = city
+      ? fetchedShops.filter((shop) => String(cityOf(shop) || '').toLowerCase() === String(city).toLowerCase())
+      : fetchedShops;
 
-    // Calculate pagination
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const shops = city
+      ? cityFiltered.slice((pageNumber - 1) * pageLimit, pageNumber * pageLimit)
+      : cityFiltered;
 
-    // Fetch shops
-    const shops = await Shop.find(filter)
-      .sort(sort)
-      .skip(skip)
-      .limit(parseInt(limit))
-      .populate('ownerId', 'firstName lastName email phone');
-
-    // Get total count
-    const total = await Shop.countDocuments(filter);
+    const total = city ? cityFiltered.length : totalBeforeCityFilter;
 
     res.json({
       success: true,
       message: 'Shops retrieved successfully',
       data: {
-        shops,
+        shops: withMongoId(shops.map(withOwnerAsOwnerId)),
         pagination: {
           total,
-          page: parseInt(page),
-          limit: parseInt(limit),
-          pages: Math.ceil(total / parseInt(limit))
+          page: pageNumber,
+          limit: pageLimit,
+          pages: Math.ceil(total / pageLimit)
         }
       }
     });
@@ -134,10 +182,21 @@ exports.getAllShops = async (req, res) => {
  */
 exports.getShopById = async (req, res) => {
   try {
-    const { shopId } = req.params;
-
-    const shop = await Shop.findById(shopId)
-      .populate('ownerId', 'firstName lastName email phone profileImage');
+    const shop = await prisma.shop.findUnique({
+      where: { id: req.params.shopId },
+      include: {
+        owner: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            profileImage: true
+          }
+        }
+      }
+    });
 
     if (!shop) {
       return res.status(404).json({
@@ -149,7 +208,7 @@ exports.getShopById = async (req, res) => {
     res.json({
       success: true,
       message: 'Shop retrieved successfully',
-      data: shop
+      data: withMongoId(withOwnerAsOwnerId(shop))
     });
   } catch (err) {
     console.error('Get shop error:', err);
@@ -166,8 +225,21 @@ exports.getShopById = async (req, res) => {
  */
 exports.getMyShop = async (req, res) => {
   try {
-    const shop = await Shop.findOne({ ownerId: req.user.userId })
-      .populate('ownerId', 'firstName lastName email phone profileImage');
+    const shop = await prisma.shop.findFirst({
+      where: { ownerId: req.user.userId },
+      include: {
+        owner: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            profileImage: true
+          }
+        }
+      }
+    });
 
     if (!shop) {
       return res.status(404).json({
@@ -179,7 +251,7 @@ exports.getMyShop = async (req, res) => {
     res.json({
       success: true,
       message: 'Your shop retrieved successfully',
-      data: shop
+      data: withMongoId(withOwnerAsOwnerId(shop))
     });
   } catch (err) {
     console.error('Get my shop error:', err);
@@ -196,7 +268,6 @@ exports.getMyShop = async (req, res) => {
  */
 exports.updateShop = async (req, res) => {
   try {
-    // Validate input
     const { error, value } = updateShopValidation(req.body);
     if (error) {
       return res.status(400).json({
@@ -209,8 +280,9 @@ exports.updateShop = async (req, res) => {
       });
     }
 
-    // Find shop by ID and verify ownership
-    const shop = await Shop.findById(req.params.shopId);
+    const shop = await prisma.shop.findUnique({
+      where: { id: req.params.shopId }
+    });
 
     if (!shop) {
       return res.status(404).json({
@@ -219,58 +291,53 @@ exports.updateShop = async (req, res) => {
       });
     }
 
-    if (shop.ownerId.toString() !== req.user.userId) {
+    if (shop.ownerId !== req.user.userId) {
       return res.status(403).json({
         success: false,
         message: 'You do not have permission to update this shop'
       });
     }
 
-    // Prepare update data
     const updateData = {};
 
-    // Simple fields
     if (value.name) updateData.name = value.name;
     if (value.description) updateData.description = value.description;
     if (value.category) updateData.category = value.category;
     if (value.about) updateData.about = value.about;
 
-    // Contact info
     if (value.phone || value.email || value.website) {
+      const contact = shop.contact || {};
       updateData.contact = {
-        phone: value.phone || shop.contact.phone,
-        email: value.email || shop.contact.email,
-        website: value.website || shop.contact.website
+        phone: value.phone || contact.phone,
+        email: value.email || contact.email,
+        website: value.website || contact.website || null
       };
     }
 
-    // Address info
     if (value.street || value.city || value.district || value.postalCode) {
+      const address = shop.address || {};
       updateData.address = {
-        street: value.street || shop.address.street,
-        city: value.city || shop.address.city,
-        district: value.district || shop.address.district,
-        postalCode: value.postalCode || shop.address.postalCode,
-        coordinates: shop.address.coordinates
+        ...address,
+        street: value.street || address.street,
+        city: value.city || address.city,
+        district: value.district || address.district,
+        postalCode: value.postalCode || address.postalCode || null
       };
     }
 
-    // Opening hours
     if (value.openingHours) {
       updateData.openingHours = value.openingHours;
     }
 
-    // Update shop
-    const updatedShop = await Shop.findByIdAndUpdate(
-      req.params.shopId,
-      updateData,
-      { new: true, runValidators: true }
-    );
+    const updatedShop = await prisma.shop.update({
+      where: { id: req.params.shopId },
+      data: updateData
+    });
 
     res.json({
       success: true,
       message: 'Shop updated successfully',
-      data: updatedShop
+      data: withMongoId(updatedShop)
     });
   } catch (err) {
     console.error('Update shop error:', err);
@@ -287,7 +354,9 @@ exports.updateShop = async (req, res) => {
  */
 exports.deleteShop = async (req, res) => {
   try {
-    const shop = await Shop.findById(req.params.shopId);
+    const shop = await prisma.shop.findUnique({
+      where: { id: req.params.shopId }
+    });
 
     if (!shop) {
       return res.status(404).json({
@@ -296,17 +365,19 @@ exports.deleteShop = async (req, res) => {
       });
     }
 
-    if (shop.ownerId.toString() !== req.user.userId) {
+    if (shop.ownerId !== req.user.userId) {
       return res.status(403).json({
         success: false,
         message: 'You do not have permission to delete this shop'
       });
     }
 
-    await Shop.findByIdAndDelete(req.params.shopId);
+    await prisma.shop.delete({ where: { id: req.params.shopId } });
 
-    // Reset user type to CUSTOMER
-    await User.findByIdAndUpdate(req.user.userId, { userType: 'CUSTOMER' });
+    await prisma.user.update({
+      where: { id: req.user.userId },
+      data: { userType: 'customer' }
+    });
 
     res.json({
       success: true,
@@ -328,29 +399,41 @@ exports.deleteShop = async (req, res) => {
 exports.searchShops = async (req, res) => {
   try {
     const { query, category, city, limit = 10 } = req.query;
+    const pageLimit = Number.parseInt(limit, 10) || 10;
 
-    const filter = { isActive: true };
+    const shops = await prisma.shop.findMany({
+      where: {
+        isActive: true,
+        ...(query
+          ? {
+              OR: [
+                { name: { contains: query } },
+                { description: { contains: query } }
+              ]
+            }
+          : {}),
+        ...(category ? { category } : {}),
+        ...(city ? {} : {})
+      },
+      take: pageLimit,
+      select: {
+        id: true,
+        name: true,
+        category: true,
+        address: true,
+        rating: true,
+        totalReviews: true
+      }
+    });
 
-    if (query) {
-      filter.$text = { $search: query };
-    }
-
-    if (category) {
-      filter.category = category;
-    }
-
-    if (city) {
-      filter['address.city'] = city;
-    }
-
-    const shops = await Shop.find(filter)
-      .limit(parseInt(limit))
-      .select('name category address.city rating totalReviews');
+    const filteredShops = city
+      ? shops.filter((shop) => String(cityOf(shop) || '').toLowerCase() === String(city).toLowerCase())
+      : shops;
 
     res.json({
       success: true,
       message: 'Search results',
-      data: shops
+      data: withMongoId(filteredShops)
     });
   } catch (err) {
     console.error('Search shops error:', err);
@@ -367,7 +450,8 @@ exports.searchShops = async (req, res) => {
  */
 exports.getShopsByCategory = async (req, res) => {
   try {
-    const { category, page = 1, limit = 10 } = req.query;
+    const { page = 1, limit = 10 } = req.query;
+    const category = req.params.category || req.query.category;
 
     if (!category) {
       return res.status(400).json({
@@ -376,24 +460,30 @@ exports.getShopsByCategory = async (req, res) => {
       });
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const pageNumber = Number.parseInt(page, 10) || 1;
+    const pageLimit = Number.parseInt(limit, 10) || 10;
 
-    const shops = await Shop.find({ category, isActive: true })
-      .skip(skip)
-      .limit(parseInt(limit));
+    const where = { category, isActive: true };
 
-    const total = await Shop.countDocuments({ category, isActive: true });
+    const [shops, total] = await Promise.all([
+      prisma.shop.findMany({
+        where,
+        skip: (pageNumber - 1) * pageLimit,
+        take: pageLimit
+      }),
+      prisma.shop.count({ where })
+    ]);
 
     res.json({
       success: true,
       message: `Shops in ${category} category`,
       data: {
-        shops,
+        shops: withMongoId(shops),
         pagination: {
           total,
-          page: parseInt(page),
-          limit: parseInt(limit),
-          pages: Math.ceil(total / parseInt(limit))
+          page: pageNumber,
+          limit: pageLimit,
+          pages: Math.ceil(total / pageLimit)
         }
       }
     });
@@ -412,7 +502,8 @@ exports.getShopsByCategory = async (req, res) => {
  */
 exports.getShopsByCity = async (req, res) => {
   try {
-    const { city, page = 1, limit = 10 } = req.query;
+    const { page = 1, limit = 10 } = req.query;
+    const city = req.params.city || req.query.city;
 
     if (!city) {
       return res.status(400).json({
@@ -421,24 +512,27 @@ exports.getShopsByCity = async (req, res) => {
       });
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const pageNumber = Number.parseInt(page, 10) || 1;
+    const pageLimit = Number.parseInt(limit, 10) || 10;
 
-    const shops = await Shop.find({ 'address.city': city, isActive: true })
-      .skip(skip)
-      .limit(parseInt(limit));
+    const allCityShops = await prisma.shop.findMany({
+      where: { isActive: true }
+    });
 
-    const total = await Shop.countDocuments({ 'address.city': city, isActive: true });
+    const cityFiltered = allCityShops.filter((shop) => String(cityOf(shop) || '').toLowerCase() === String(city).toLowerCase());
+    const total = cityFiltered.length;
+    const shops = cityFiltered.slice((pageNumber - 1) * pageLimit, pageNumber * pageLimit);
 
     res.json({
       success: true,
       message: `Shops in ${city}`,
       data: {
-        shops,
+        shops: withMongoId(shops),
         pagination: {
           total,
-          page: parseInt(page),
-          limit: parseInt(limit),
-          pages: Math.ceil(total / parseInt(limit))
+          page: pageNumber,
+          limit: pageLimit,
+          pages: Math.ceil(total / pageLimit)
         }
       }
     });
@@ -460,26 +554,27 @@ exports.updateShopRating = async (req, res) => {
     const { shopId } = req.params;
     const { rating, totalReviews } = req.body;
 
-    const shop = await Shop.findByIdAndUpdate(
-      shopId,
-      { rating, totalReviews },
-      { new: true }
-    );
+    const shop = await prisma.shop.update({
+      where: { id: shopId },
+      data: {
+        rating: Number(rating),
+        totalReviews: Number(totalReviews)
+      }
+    });
 
-    if (!shop) {
+    res.json({
+      success: true,
+      message: 'Shop rating updated',
+      data: withMongoId(shop)
+    });
+  } catch (err) {
+    console.error('Update rating error:', err);
+    if (err.code === 'P2025') {
       return res.status(404).json({
         success: false,
         message: 'Shop not found'
       });
     }
-
-    res.json({
-      success: true,
-      message: 'Shop rating updated',
-      data: shop
-    });
-  } catch (err) {
-    console.error('Update rating error:', err);
     res.status(500).json({
       success: false,
       message: 'Failed to update shop rating',

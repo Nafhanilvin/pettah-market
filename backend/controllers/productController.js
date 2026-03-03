@@ -1,15 +1,50 @@
-const Product = require('../models/Product');
-const Shop = require('../models/Shop');
-const Category = require('../models/Category');
+const prisma = require('../config/prisma');
+const { withMongoId } = require('../utils/normalizers');
+
+const parseSort = (sort) => {
+  if (!sort || typeof sort !== 'string') return { createdAt: 'desc' };
+
+  const direction = sort.startsWith('-') ? 'desc' : 'asc';
+  const key = sort.replace(/^-/, '');
+  const allowed = ['createdAt', 'updatedAt', 'rating', 'price', 'name'];
+
+  if (!allowed.includes(key)) {
+    return { createdAt: 'desc' };
+  }
+
+  return { [key]: direction };
+};
+
+const withPopulatedFields = (product) => {
+  if (!product) return product;
+
+  const { shop, category, ...rest } = product;
+  return {
+    ...rest,
+    shopId: shop || rest.shopId,
+    categoryId: category || rest.categoryId
+  };
+};
 
 /**
  * Create a new product
  */
 exports.createProduct = async (req, res) => {
   try {
-    const { name, description, categoryId, price, discountPrice, quantity, sku } = req.body;
+    const {
+      name,
+      description,
+      categoryId,
+      price,
+      discountPrice,
+      quantity,
+      sku,
+      images,
+      tags,
+      weight,
+      dimensions
+    } = req.body;
 
-    // Validate required fields
     if (!name || !description || !categoryId || !price) {
       return res.status(400).json({
         success: false,
@@ -17,8 +52,10 @@ exports.createProduct = async (req, res) => {
       });
     }
 
-    // Verify shop exists and belongs to user
-    const shop = await Shop.findOne({ ownerId: req.user.userId });
+    const shop = await prisma.shop.findFirst({
+      where: { ownerId: req.user.userId }
+    });
+
     if (!shop) {
       return res.status(404).json({
         success: false,
@@ -26,8 +63,10 @@ exports.createProduct = async (req, res) => {
       });
     }
 
-    // Verify category exists
-    const category = await Category.findById(categoryId);
+    const category = await prisma.category.findUnique({
+      where: { id: categoryId }
+    });
+
     if (!category) {
       return res.status(404).json({
         success: false,
@@ -35,27 +74,32 @@ exports.createProduct = async (req, res) => {
       });
     }
 
-    const product = new Product({
-      shopId: shop._id,
-      name,
-      description,
-      categoryId,
-      price,
-      discountPrice: discountPrice || null,
-      quantity: quantity || 0,
-      sku: sku || `${shop._id}-${Date.now()}`
+    const product = await prisma.product.create({
+      data: {
+        shopId: shop.id,
+        name,
+        description,
+        categoryId,
+        price: Number(price),
+        discountPrice: discountPrice ? Number(discountPrice) : null,
+        quantity: quantity ? Number(quantity) : 0,
+        sku: sku || `${shop.id}-${Date.now()}`,
+        images: Array.isArray(images) ? images.filter(Boolean) : null,
+        tags: Array.isArray(tags) ? tags.filter(Boolean) : null,
+        weight: weight !== undefined && weight !== null && weight !== '' ? Number(weight) : null,
+        dimensions: dimensions && typeof dimensions === 'object' ? dimensions : null
+      }
     });
 
-    await product.save();
-
-    // Update shop total products
-    shop.totalProducts += 1;
-    await shop.save();
+    await prisma.shop.update({
+      where: { id: shop.id },
+      data: { totalProducts: { increment: 1 } }
+    });
 
     res.status(201).json({
       success: true,
       message: 'Product created successfully',
-      data: product
+      data: withMongoId(product)
     });
   } catch (err) {
     console.error('Create product error:', err);
@@ -74,43 +118,56 @@ exports.getAllProducts = async (req, res) => {
   try {
     const { categoryId, shopId, search, minPrice, maxPrice, inStock, page = 1, limit = 10, sort = '-createdAt' } = req.query;
 
-    const filter = { isActive: true };
+    const pageNumber = Number.parseInt(page, 10) || 1;
+    const pageLimit = Number.parseInt(limit, 10) || 10;
 
-    if (categoryId) filter.categoryId = categoryId;
-    if (shopId) filter.shopId = shopId;
-    if (inStock === 'true') filter.inStock = true;
+    const where = {
+      isActive: true,
+      ...(categoryId ? { categoryId } : {}),
+      ...(shopId ? { shopId } : {}),
+      ...(inStock === 'true' ? { inStock: true } : {}),
+      ...((minPrice || maxPrice)
+        ? {
+            price: {
+              ...(minPrice ? { gte: Number(minPrice) } : {}),
+              ...(maxPrice ? { lte: Number(maxPrice) } : {})
+            }
+          }
+        : {}),
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search } },
+              { description: { contains: search } }
+            ]
+          }
+        : {})
+    };
 
-    if (minPrice || maxPrice) {
-      filter.price = {};
-      if (minPrice) filter.price.$gte = Number(minPrice);
-      if (maxPrice) filter.price.$lte = Number(maxPrice);
-    }
-
-    if (search) {
-      filter.$text = { $search: search };
-    }
-
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-
-    const products = await Product.find(filter)
-      .populate('shopId', 'name')
-      .populate('categoryId', 'name slug')
-      .skip(skip)
-      .limit(parseInt(limit))
-      .sort(sort);
-
-    const total = await Product.countDocuments(filter);
+    const [products, total] = await Promise.all([
+      prisma.product.findMany({
+        where,
+        include: {
+          shop: { select: { id: true, name: true } },
+          category: { select: { id: true, name: true, slug: true } }
+        },
+        skip: (pageNumber - 1) * pageLimit,
+        take: pageLimit,
+        orderBy: parseSort(sort)
+      }),
+      prisma.product.count({ where })
+    ]);
 
     res.json({
       success: true,
       message: 'Products retrieved successfully',
       data: {
-        products,
+        products: withMongoId(products.map(withPopulatedFields)),
         pagination: {
           total,
-          page: parseInt(page),
-          limit: parseInt(limit),
-          pages: Math.ceil(total / parseInt(limit))
+          page: pageNumber,
+          limit: pageLimit,
+          pages: Math.ceil(total / pageLimit)
         }
       }
     });
@@ -129,9 +186,13 @@ exports.getAllProducts = async (req, res) => {
  */
 exports.getProductById = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.productId)
-      .populate('shopId')
-      .populate('categoryId');
+    const product = await prisma.product.findUnique({
+      where: { id: req.params.productId },
+      include: {
+        shop: true,
+        category: true
+      }
+    });
 
     if (!product) {
       return res.status(404).json({
@@ -140,14 +201,20 @@ exports.getProductById = async (req, res) => {
       });
     }
 
-    // Increment views
-    product.views += 1;
-    await product.save();
+    await prisma.product.update({
+      where: { id: product.id },
+      data: { views: { increment: 1 } }
+    });
+
+    const updated = {
+      ...product,
+      views: product.views + 1
+    };
 
     res.json({
       success: true,
       message: 'Product retrieved successfully',
-      data: product
+      data: withMongoId(withPopulatedFields(updated))
     });
   } catch (err) {
     console.error('Get product error:', err);
@@ -167,25 +234,35 @@ exports.getProductsByShop = async (req, res) => {
     const { shopId } = req.params;
     const { page = 1, limit = 10 } = req.query;
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const pageNumber = Number.parseInt(page, 10) || 1;
+    const pageLimit = Number.parseInt(limit, 10) || 10;
 
-    const products = await Product.find({ shopId, isActive: true })
-      .populate('categoryId', 'name')
-      .skip(skip)
-      .limit(parseInt(limit));
+    const where = { shopId, isActive: true };
 
-    const total = await Product.countDocuments({ shopId, isActive: true });
+    const [products, total] = await Promise.all([
+      prisma.product.findMany({
+        where,
+        include: {
+          category: {
+            select: { id: true, name: true }
+          }
+        },
+        skip: (pageNumber - 1) * pageLimit,
+        take: pageLimit
+      }),
+      prisma.product.count({ where })
+    ]);
 
     res.json({
       success: true,
       message: 'Shop products retrieved',
       data: {
-        products,
+        products: withMongoId(products.map(withPopulatedFields)),
         pagination: {
           total,
-          page: parseInt(page),
-          limit: parseInt(limit),
-          pages: Math.ceil(total / parseInt(limit))
+          page: pageNumber,
+          limit: pageLimit,
+          pages: Math.ceil(total / pageLimit)
         }
       }
     });
@@ -204,7 +281,10 @@ exports.getProductsByShop = async (req, res) => {
  */
 exports.getMyProducts = async (req, res) => {
   try {
-    const shop = await Shop.findOne({ ownerId: req.user.userId });
+    const shop = await prisma.shop.findFirst({
+      where: { ownerId: req.user.userId }
+    });
+
     if (!shop) {
       return res.status(404).json({
         success: false,
@@ -213,25 +293,35 @@ exports.getMyProducts = async (req, res) => {
     }
 
     const { page = 1, limit = 10 } = req.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const pageNumber = Number.parseInt(page, 10) || 1;
+    const pageLimit = Number.parseInt(limit, 10) || 10;
 
-    const products = await Product.find({ shopId: shop._id })
-      .populate('categoryId', 'name')
-      .skip(skip)
-      .limit(parseInt(limit));
+    const where = { shopId: shop.id };
 
-    const total = await Product.countDocuments({ shopId: shop._id });
+    const [products, total] = await Promise.all([
+      prisma.product.findMany({
+        where,
+        include: {
+          category: {
+            select: { id: true, name: true }
+          }
+        },
+        skip: (pageNumber - 1) * pageLimit,
+        take: pageLimit
+      }),
+      prisma.product.count({ where })
+    ]);
 
     res.json({
       success: true,
       message: 'Your products retrieved',
       data: {
-        products,
+        products: withMongoId(products.map(withPopulatedFields)),
         pagination: {
           total,
-          page: parseInt(page),
-          limit: parseInt(limit),
-          pages: Math.ceil(total / parseInt(limit))
+          page: pageNumber,
+          limit: pageLimit,
+          pages: Math.ceil(total / pageLimit)
         }
       }
     });
@@ -250,7 +340,9 @@ exports.getMyProducts = async (req, res) => {
  */
 exports.updateProduct = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.productId);
+    const product = await prisma.product.findUnique({
+      where: { id: req.params.productId }
+    });
 
     if (!product) {
       return res.status(404).json({
@@ -259,34 +351,60 @@ exports.updateProduct = async (req, res) => {
       });
     }
 
-    // Verify ownership
-    const shop = await Shop.findById(product.shopId);
-    if (shop.ownerId.toString() !== req.user.userId) {
+    const shop = await prisma.shop.findUnique({ where: { id: product.shopId } });
+    if (!shop || shop.ownerId !== req.user.userId) {
       return res.status(403).json({
         success: false,
         message: 'You do not have permission to update this product'
       });
     }
 
-    const allowedFields = ['name', 'description', 'price', 'discountPrice', 'quantity', 'inStock', 'categoryId', 'tags'];
+    const allowedFields = ['name', 'description', 'price', 'discountPrice', 'quantity', 'inStock', 'categoryId', 'tags', 'images', 'weight', 'dimensions', 'sku'];
     const updateData = {};
 
-    allowedFields.forEach(field => {
+    allowedFields.forEach((field) => {
       if (req.body[field] !== undefined) {
         updateData[field] = req.body[field];
       }
     });
 
-    const updatedProduct = await Product.findByIdAndUpdate(
-      req.params.productId,
-      updateData,
-      { new: true, runValidators: true }
-    );
+    if (updateData.price !== undefined) {
+      updateData.price = Number(updateData.price);
+    }
+
+    if (updateData.discountPrice !== undefined) {
+      updateData.discountPrice = updateData.discountPrice === null ? null : Number(updateData.discountPrice);
+    }
+
+    if (updateData.quantity !== undefined) {
+      updateData.quantity = Number(updateData.quantity);
+    }
+
+    if (updateData.weight !== undefined) {
+      updateData.weight = updateData.weight === null || updateData.weight === '' ? null : Number(updateData.weight);
+    }
+
+    if (updateData.images !== undefined) {
+      updateData.images = Array.isArray(updateData.images) ? updateData.images.filter(Boolean) : null;
+    }
+
+    if (updateData.tags !== undefined) {
+      updateData.tags = Array.isArray(updateData.tags) ? updateData.tags.filter(Boolean) : null;
+    }
+
+    if (updateData.dimensions !== undefined && (!updateData.dimensions || typeof updateData.dimensions !== 'object')) {
+      updateData.dimensions = null;
+    }
+
+    const updatedProduct = await prisma.product.update({
+      where: { id: req.params.productId },
+      data: updateData
+    });
 
     res.json({
       success: true,
       message: 'Product updated successfully',
-      data: updatedProduct
+      data: withMongoId(updatedProduct)
     });
   } catch (err) {
     console.error('Update product error:', err);
@@ -303,7 +421,9 @@ exports.updateProduct = async (req, res) => {
  */
 exports.deleteProduct = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.productId);
+    const product = await prisma.product.findUnique({
+      where: { id: req.params.productId }
+    });
 
     if (!product) {
       return res.status(404).json({
@@ -312,20 +432,22 @@ exports.deleteProduct = async (req, res) => {
       });
     }
 
-    // Verify ownership
-    const shop = await Shop.findById(product.shopId);
-    if (shop.ownerId.toString() !== req.user.userId) {
+    const shop = await prisma.shop.findUnique({ where: { id: product.shopId } });
+    if (!shop || shop.ownerId !== req.user.userId) {
       return res.status(403).json({
         success: false,
         message: 'You do not have permission to delete this product'
       });
     }
 
-    await Product.findByIdAndDelete(req.params.productId);
+    await prisma.product.delete({ where: { id: req.params.productId } });
 
-    // Update shop total products
-    shop.totalProducts = Math.max(0, shop.totalProducts - 1);
-    await shop.save();
+    await prisma.shop.update({
+      where: { id: shop.id },
+      data: {
+        totalProducts: Math.max(0, (shop.totalProducts || 0) - 1)
+      }
+    });
 
     res.json({
       success: true,
@@ -347,31 +469,46 @@ exports.deleteProduct = async (req, res) => {
 exports.searchProducts = async (req, res) => {
   try {
     const { query, categoryId, minPrice, maxPrice, limit = 20 } = req.query;
+    const pageLimit = Number.parseInt(limit, 10) || 20;
 
-    const filter = { isActive: true };
-
-    if (query) {
-      filter.$text = { $search: query };
-    }
-
-    if (categoryId) {
-      filter.categoryId = categoryId;
-    }
-
-    if (minPrice || maxPrice) {
-      filter.price = {};
-      if (minPrice) filter.price.$gte = Number(minPrice);
-      if (maxPrice) filter.price.$lte = Number(maxPrice);
-    }
-
-    const products = await Product.find(filter)
-      .limit(parseInt(limit))
-      .select('name price discountPrice categoryId shopId rating images');
+    const products = await prisma.product.findMany({
+      where: {
+        isActive: true,
+        ...(query
+          ? {
+              OR: [
+                { name: { contains: query } },
+                { description: { contains: query } }
+              ]
+            }
+          : {}),
+        ...(categoryId ? { categoryId } : {}),
+        ...((minPrice || maxPrice)
+          ? {
+              price: {
+                ...(minPrice ? { gte: Number(minPrice) } : {}),
+                ...(maxPrice ? { lte: Number(maxPrice) } : {})
+              }
+            }
+          : {})
+      },
+      take: pageLimit,
+      select: {
+        id: true,
+        name: true,
+        price: true,
+        discountPrice: true,
+        categoryId: true,
+        shopId: true,
+        rating: true,
+        images: true
+      }
+    });
 
     res.json({
       success: true,
       message: 'Products found',
-      data: products
+      data: withMongoId(products)
     });
   } catch (err) {
     console.error('Search products error:', err);
@@ -389,16 +526,28 @@ exports.searchProducts = async (req, res) => {
 exports.getFeaturedProducts = async (req, res) => {
   try {
     const { limit = 10 } = req.query;
+    const pageLimit = Number.parseInt(limit, 10) || 10;
 
-    const products = await Product.find({ isActive: true, isHighlighted: true })
-      .limit(parseInt(limit))
-      .sort('-rating')
-      .populate('shopId', 'name');
+    const products = await prisma.product.findMany({
+      where: { isActive: true, isHighlighted: true },
+      take: pageLimit,
+      orderBy: { rating: 'desc' },
+      include: {
+        shop: {
+          select: {
+            id: true,
+            name: true
+          }
+        }
+      }
+    });
 
     res.json({
       success: true,
       message: 'Featured products retrieved',
-      data: products
+      data: {
+        products: withMongoId(products.map(withPopulatedFields))
+      }
     });
   } catch (err) {
     console.error('Get featured products error:', err);
@@ -418,26 +567,27 @@ exports.updateProductRating = async (req, res) => {
     const { productId } = req.params;
     const { rating, totalReviews } = req.body;
 
-    const product = await Product.findByIdAndUpdate(
-      productId,
-      { rating, totalReviews },
-      { new: true }
-    );
+    const product = await prisma.product.update({
+      where: { id: productId },
+      data: {
+        rating: Number(rating),
+        totalReviews: Number(totalReviews)
+      }
+    });
 
-    if (!product) {
+    res.json({
+      success: true,
+      message: 'Product rating updated',
+      data: withMongoId(product)
+    });
+  } catch (err) {
+    console.error('Update rating error:', err);
+    if (err.code === 'P2025') {
       return res.status(404).json({
         success: false,
         message: 'Product not found'
       });
     }
-
-    res.json({
-      success: true,
-      message: 'Product rating updated',
-      data: product
-    });
-  } catch (err) {
-    console.error('Update rating error:', err);
     res.status(500).json({
       success: false,
       message: 'Failed to update product rating',
